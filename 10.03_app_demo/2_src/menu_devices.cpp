@@ -60,6 +60,7 @@
 #include "rx11211.hpp"
 #include "uda.hpp"
 #include "dl11w.hpp"
+#include "dhq11.hpp"
 #include "ke11.hpp"
 #if defined(UNIBUS)
 #include "m9312.hpp"
@@ -202,6 +203,7 @@ void application_c::menu_devices(const char *menu_code, bool with_emulated_CPU)
     // Create 2 SLUs + LTC
     slu_c *DL11 = new slu_c();
     slu_c *DL11b = new slu_c();
+    dhq11_c *DHQ11 = new dhq11_c();
     // 2nd UART different parameters, default for TU58 interface
     // !!! disable Linux usage, agetty !!!
     DL11b->name.value = "DL11b";
@@ -215,6 +217,12 @@ void application_c::menu_devices(const char *menu_code, bool with_emulated_CPU)
     DL11b->mode.value = "8N1";
     DL11b->error_bits_enable.value = false ; // M7856 SW4-7 ?
     DL11b->break_enable.value = true ; // TU58 needs BREAK
+
+    DHQ11->name.value = "DHQ11";
+    DHQ11->base_addr.value = 0776500;
+    DHQ11->intr_vector.value = 0300;
+    DHQ11->intr_level.value = 4;
+    DHQ11->telnet_port_base.value = 20000;
 
     // to inject characters into DL11 receiver
     // only 1st SLU, use this for console
@@ -319,6 +327,10 @@ void application_c::menu_devices(const char *menu_code, bool with_emulated_CPU)
                 printf(
                     "dl11 wait <timeout_ms> <string>	wait time until DL11 was ordered to transmit <string>.\n");
                 printf("                     On timeout, script execution is terminated.\n");
+            }
+            if (DHQ11->enabled.value) {
+                printf("dhq11 ports          Show DHQ11 telnet port and queue status.\n");
+                printf("dhq11 reset          Reset DHQ11 controller state.\n");
             }
             printf("dbg c|s|f            Debug log: Clear, Show on console, dump to File.\n");
             printf("                       (file = %s)\n", logger->default_filepath.c_str());
@@ -636,6 +648,15 @@ void application_c::menu_devices(const char *menu_code, bool with_emulated_CPU)
                     }
                 } else {
                     printf("Unknown DL11 command \"%s\"!\n", s_choice);
+                    show_help = true;
+                }
+            } else if (DHQ11->enabled.value && !strcasecmp(s_opcode, "dhq11")) {
+                if (n_fields == 2 && !strcasecmp(s_param[0], "ports")) {
+                    DHQ11->print_line_status();
+                } else if (n_fields == 2 && !strcasecmp(s_param[0], "reset")) {
+                    DHQ11->reset();
+                } else {
+                    printf("Unknown DHQ11 command \"%s\"!\n", s_choice);
                     show_help = true;
                 }
             } else {

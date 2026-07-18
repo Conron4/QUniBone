@@ -308,6 +308,9 @@ $(OBJDIR)/rs232adapter.o :  $(DEVICE_SRC_DIR)/rs232adapter.cpp $(DEVICE_SRC_DIR)
 $(OBJDIR)/dl11w.o :  $(DEVICE_SRC_DIR)/dl11w.cpp $(DEVICE_SRC_DIR)/dl11w.hpp
 	$(CC) $(CCFLAGS) $< -o $@
 
+$(OBJDIR)/dhq11.o :  $(DEVICE_SRC_DIR)/dhq11.cpp $(DEVICE_SRC_DIR)/dhq11.hpp
+	$(CC) $(CCFLAGS) $< -o $@
+
 $(OBJDIR)/storageimage.o :  $(DEVICE_SRC_DIR)/storageimage.cpp $(DEVICE_SRC_DIR)/storageimage.hpp
 	$(CC) $(CCFLAGS) $< -o $@
 
