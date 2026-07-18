@@ -12,6 +12,7 @@
 
 #include <deque>
 #include <string>
+#include <vector>
 
 #include <pthread.h>
 
@@ -32,7 +33,9 @@ private:
         dhq11_idx_lpr,
         dhq11_idx_stat,
         dhq11_idx_ctrl,
-        dhq11_idx_xbuf,
+        dhq11_idx_tbadl,
+        dhq11_idx_tbadh,
+        dhq11_idx_tbct,
         dhq11_idx_count
     };
 
@@ -44,12 +47,19 @@ private:
         bool connected;
         bool telnet_iac;
         bool telnet_skip_option;
+                uint16_t tbadl;
+                uint16_t tbadh;
+                uint16_t tbct;
+                bool tx_dma_pending;
+                bool tx_dma_active;
+                bool tx_dma_error;
         std::deque<uint8_t> rx_queue;
         std::deque<uint8_t> tx_queue;
 
         line_state_t()
             : line_index(0), listen_fd(-1), client_fd(-1), tcp_port(0), connected(false),
-              telnet_iac(false), telnet_skip_option(false) {}
+                            telnet_iac(false), telnet_skip_option(false), tbadl(0), tbadh(0), tbct(0),
+                            tx_dma_pending(false), tx_dma_active(false), tx_dma_error(false) {}
     };
 
     struct rx_entry_t {
@@ -62,9 +72,12 @@ private:
     qunibusdevice_register_t *reg_lpr;
     qunibusdevice_register_t *reg_stat;
     qunibusdevice_register_t *reg_ctrl;
-    qunibusdevice_register_t *reg_xbuf;
+    qunibusdevice_register_t *reg_tbadl;
+    qunibusdevice_register_t *reg_tbadh;
+    qunibusdevice_register_t *reg_tbct;
 
     intr_request_c intr_request = intr_request_c(this);
+    dma_request_c dma_request = dma_request_c(this);
 
     dhq11_personality_e personality;
 
@@ -90,6 +103,7 @@ private:
     void service_listener(line_state_t &line, unsigned line_index);
     void service_client_rx(line_state_t &line, unsigned line_index);
     void service_client_tx(line_state_t &line, unsigned line_index);
+    bool service_pending_tx_dma(void);
     void queue_rx_byte(unsigned line_index, uint8_t value);
     void queue_tx_byte(unsigned line_index, uint8_t value);
     void update_csr(void);
@@ -97,13 +111,14 @@ private:
     void update_lpr(void);
     void update_stat(void);
     void update_ctrl(void);
-    void update_xbuf(void);
+    void update_tbadl(void);
+    void update_tbadh(void);
+    void update_tbct(void);
     bool get_intr_condition(void);
     void reset_state(void);
     void eval_csr_dato_value(void);
     void eval_lpr_dato_value(void);
     void eval_ctrl_dato_value(void);
-    void eval_xbuf_dato_value(void);
 
 public:
     void print_line_status(void);

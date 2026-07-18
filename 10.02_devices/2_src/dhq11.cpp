@@ -11,6 +11,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <vector>
 
 #include "dhq11.hpp"
 #include "logger.hpp"
@@ -18,23 +19,46 @@
 #include "qunibus.h"
 
 #define DHQ11_LINE_COUNT 8
-#define DHQ11_CSR_LINE_MASK 0000007
-#define DHQ11_CSR_RXIE 0000100
-#define DHQ11_CSR_TXIE 0000200
-#define DHQ11_CSR_RXRDY 0000400
-#define DHQ11_CSR_TXRDY 0001000
 
-#define DHQ11_STAT_DSR 0001000
-#define DHQ11_STAT_RI  0002000
-#define DHQ11_STAT_DCD  0004000
-#define DHQ11_STAT_CTS  0010000
+#define DHQ11_CSR_DHV11_TXA       0x8000
+#define DHQ11_CSR_DHV11_TXIE      0x4000
+#define DHQ11_CSR_DHV11_DF        0x2000
+#define DHQ11_CSR_DHV11_TDE       0x1000
+#define DHQ11_CSR_DHV11_TX_LINE   0x0400
+#define DHQ11_CSR_DHV11_RDA       0x0200
+#define DHQ11_CSR_DHV11_RXIE      0x0100
+#define DHQ11_CSR_DHV11_MR        0x0080
+#define DHQ11_CSR_DHV11_LINE_MASK 0x003f
 
-#define DHQ11_CTRL_DTR  0001000
-#define DHQ11_CTRL_RTS  0040000
-#define DHQ11_CTRL_RXE  0000040
-#define DHQ11_CTRL_BREAK 0000020
+#define DHQ11_CSR_DHU11_TXA       0x8000
+#define DHQ11_CSR_DHU11_TXIE      0x4000
+#define DHQ11_CSR_DHU11_DF        0x2000
+#define DHQ11_CSR_DHU11_TDE       0x1000
+#define DHQ11_CSR_DHU11_TX_LINE   0x0800
+#define DHQ11_CSR_DHU11_RDA       0x0400
+#define DHQ11_CSR_DHU11_RXIE      0x0200
+#define DHQ11_CSR_DHU11_MR        0x0100
+#define DHQ11_CSR_DHU11_SKIP      0x0080
+#define DHQ11_CSR_DHU11_LINE_MASK 0x007f
 
-#define DHQ11_LPR_BAUD_MASK 0170000
+#define DHQ11_STAT_DSR            0x8000
+#define DHQ11_STAT_RI             0x2000
+#define DHQ11_STAT_DCD            0x1000
+#define DHQ11_STAT_CTS            0x0800
+#define DHQ11_STAT_DHU            0x0080
+
+#define DHQ11_CTRL_RTS            0x4000
+#define DHQ11_CTRL_DTR            0x1000
+#define DHQ11_CTRL_LTYP           0x0800
+#define DHQ11_CTRL_MAINT          0x0400
+#define DHQ11_CTRL_FXOFF          0x0200
+#define DHQ11_CTRL_OAUTO          0x0100
+#define DHQ11_CTRL_BREAK          0x0080
+#define DHQ11_CTRL_RXE            0x0040
+#define DHQ11_CTRL_IAF            0x0020
+#define DHQ11_CTRL_TXA            0x0010
+
+#define DHQ11_LPR_BAUD_MASK       0xf000
 
 static void set_nonblocking(int fd)
 {
@@ -67,7 +91,7 @@ dhq11_c::dhq11_c() : qunibusdevice_c()
     strcpy(reg_csr->name, "CSR");
     reg_csr->active_on_dati = false;
     reg_csr->active_on_dato = true;
-    reg_csr->reset_value = DHQ11_CSR_TXRDY;
+    reg_csr->reset_value = 0;
     reg_csr->writable_bits = 0xffff;
 
     reg_rbuf = &(registers[dhq11_idx_rbuf]);
@@ -98,12 +122,26 @@ dhq11_c::dhq11_c() : qunibusdevice_c()
     reg_ctrl->reset_value = 0;
     reg_ctrl->writable_bits = 0xffff;
 
-    reg_xbuf = &(registers[dhq11_idx_xbuf]);
-    strcpy(reg_xbuf->name, "TXC");
-    reg_xbuf->active_on_dati = false;
-    reg_xbuf->active_on_dato = true;
-    reg_xbuf->reset_value = 0;
-    reg_xbuf->writable_bits = 0x00ff;
+    reg_tbadl = &(registers[dhq11_idx_tbadl]);
+    strcpy(reg_tbadl->name, "TBADL");
+    reg_tbadl->active_on_dati = true;
+    reg_tbadl->active_on_dato = true;
+    reg_tbadl->reset_value = 0;
+    reg_tbadl->writable_bits = 0xffff;
+
+    reg_tbadh = &(registers[dhq11_idx_tbadh]);
+    strcpy(reg_tbadh->name, "TBADH");
+    reg_tbadh->active_on_dati = true;
+    reg_tbadh->active_on_dato = true;
+    reg_tbadh->reset_value = 0;
+    reg_tbadh->writable_bits = 0xffff;
+
+    reg_tbct = &(registers[dhq11_idx_tbct]);
+    strcpy(reg_tbct->name, "TBCT");
+    reg_tbct->active_on_dati = true;
+    reg_tbct->active_on_dato = true;
+    reg_tbct->reset_value = 0;
+    reg_tbct->writable_bits = 0xffff;
 
     compatibility.value = "DHV11";
     telnet_port_base.value = 20000;
@@ -238,16 +276,25 @@ void dhq11_c::print_line_status(void)
 
 void dhq11_c::update_csr(void)
 {
-    uint16_t value = (uint16_t)(selected_line & DHQ11_CSR_LINE_MASK);
-    tx_ready = lines[selected_line].tx_queue.empty();
-    if (rx_intr_enable)
-        value |= DHQ11_CSR_RXIE;
-    if (tx_intr_enable)
-        value |= DHQ11_CSR_TXIE;
+    uint16_t value = get_register_dato_value(reg_csr);
+    const uint16_t line_mask = is_dhu11_mode() ? DHQ11_CSR_DHU11_LINE_MASK : DHQ11_CSR_DHV11_LINE_MASK;
+    const uint16_t rda_mask = is_dhu11_mode() ? DHQ11_CSR_DHU11_RDA : DHQ11_CSR_DHV11_RDA;
+    const uint16_t txa_mask = DHQ11_CSR_DHV11_TXA;
+    const uint16_t tx_line_mask = is_dhu11_mode() ? DHQ11_CSR_DHU11_TX_LINE : DHQ11_CSR_DHV11_TX_LINE;
+    line_state_t &line = lines[selected_line];
+
+    tx_ready = !line.tx_dma_pending && !line.tx_dma_active && line.tx_queue.empty();
+    value &= ~(rda_mask | txa_mask | tx_line_mask | DHQ11_CSR_DHV11_DF | DHQ11_CSR_DHV11_TDE);
     if (rx_done)
-        value |= DHQ11_CSR_RXRDY;
-    if (tx_ready)
-        value |= DHQ11_CSR_TXRDY;
+        value |= rda_mask;
+    if (!tx_ready) {
+        value |= txa_mask;
+        value |= tx_line_mask;
+    }
+    if (line.tx_dma_error)
+        value |= DHQ11_CSR_DHV11_TDE;
+    value &= ~line_mask;
+    value |= (uint16_t)(selected_line & 0x0007);
 
     bool interrupt_condition = get_intr_condition();
     switch (intr_request.edge_detect(interrupt_condition)) {
@@ -285,41 +332,54 @@ void dhq11_c::update_lpr(void)
     uint16_t value = get_register_dato_value(reg_lpr);
     value &= ~DHQ11_LPR_BAUD_MASK;
     if (line.connected)
-        value |= 0010000;
+        value |= 0x1000;
     set_register_dati_value(reg_lpr, value, __func__);
 }
 
 void dhq11_c::update_stat(void)
 {
     line_state_t &line = lines[selected_line];
-    uint16_t value = 0;
+    uint16_t value = get_register_dato_value(reg_stat);
+    value &= ~(DHQ11_STAT_DSR | DHQ11_STAT_RI | DHQ11_STAT_DCD | DHQ11_STAT_CTS | DHQ11_STAT_DHU);
     if (line.connected) {
         value |= DHQ11_STAT_DSR | DHQ11_STAT_DCD | DHQ11_STAT_CTS;
         if (line.telnet_iac)
             value |= DHQ11_STAT_RI;
     }
+    if (!is_dhu11_mode())
+        value &= ~DHQ11_STAT_DHU;
     set_register_dati_value(reg_stat, value, __func__);
 }
 
 void dhq11_c::update_ctrl(void)
 {
     line_state_t &line = lines[selected_line];
-    uint16_t value = 0;
+    uint16_t value = get_register_dato_value(reg_ctrl);
+    value &= ~(DHQ11_CTRL_RTS | DHQ11_CTRL_DTR | DHQ11_CTRL_LTYP | DHQ11_CTRL_MAINT | DHQ11_CTRL_FXOFF |
+               DHQ11_CTRL_OAUTO | DHQ11_CTRL_BREAK | DHQ11_CTRL_RXE | DHQ11_CTRL_IAF | DHQ11_CTRL_TXA);
     if (line.connected)
-        value |= DHQ11_CTRL_RXE;
-    if (tx_intr_enable)
-        value |= DHQ11_CTRL_RTS;
-    if (!is_dhu11_mode())
-        value |= DHQ11_CTRL_DTR;
+        value |= DHQ11_CTRL_RTS | DHQ11_CTRL_DTR | DHQ11_CTRL_RXE;
     if (line.telnet_iac)
         value |= DHQ11_CTRL_BREAK;
     set_register_dati_value(reg_ctrl, value, __func__);
 }
 
-void dhq11_c::update_xbuf(void)
+void dhq11_c::update_tbadl(void)
 {
-    uint16_t value = get_register_dato_value(reg_xbuf) & 0x00ff;
-    set_register_dati_value(reg_xbuf, value, __func__);
+    line_state_t &line = lines[selected_line];
+    set_register_dati_value(reg_tbadl, line.tbadl, __func__);
+}
+
+void dhq11_c::update_tbadh(void)
+{
+    line_state_t &line = lines[selected_line];
+    set_register_dati_value(reg_tbadh, line.tbadh, __func__);
+}
+
+void dhq11_c::update_tbct(void)
+{
+    line_state_t &line = lines[selected_line];
+    set_register_dati_value(reg_tbct, line.tbct, __func__);
 }
 
 bool dhq11_c::get_intr_condition(void)
@@ -343,6 +403,19 @@ void dhq11_c::reset_state(void)
     tx_interrupt_pending = false;
     intr_request.edge_detect_reset();
 
+    for (unsigned i = 0; i < DHQ11_LINE_COUNT; ++i) {
+        lines[i].tbadl = 0;
+        lines[i].tbadh = 0;
+        lines[i].tbct = 0;
+        lines[i].tx_dma_pending = false;
+        lines[i].tx_dma_active = false;
+        lines[i].tx_dma_error = false;
+        lines[i].rx_queue.clear();
+        lines[i].tx_queue.clear();
+        lines[i].telnet_iac = false;
+        lines[i].telnet_skip_option = false;
+    }
+
     if (handle != 0) {
         reset_unibus_registers();
         update_csr();
@@ -350,7 +423,9 @@ void dhq11_c::reset_state(void)
         update_lpr();
         update_stat();
         update_ctrl();
-        update_xbuf();
+        update_tbadl();
+        update_tbadh();
+        update_tbct();
     }
 }
 
@@ -401,9 +476,19 @@ bool dhq11_c::on_param_changed(parameter_c *param)
 void dhq11_c::eval_csr_dato_value(void)
 {
     uint16_t value = get_register_dato_value(reg_csr);
-    selected_line = value & DHQ11_CSR_LINE_MASK;
-    rx_intr_enable = !!(value & DHQ11_CSR_RXIE);
-    tx_intr_enable = !!(value & DHQ11_CSR_TXIE);
+    const uint16_t rxie_mask = is_dhu11_mode() ? DHQ11_CSR_DHU11_RXIE : DHQ11_CSR_DHV11_RXIE;
+    const uint16_t txie_mask = is_dhu11_mode() ? DHQ11_CSR_DHU11_TXIE : DHQ11_CSR_DHV11_TXIE;
+    const uint16_t mr_mask = is_dhu11_mode() ? DHQ11_CSR_DHU11_MR : DHQ11_CSR_DHV11_MR;
+
+    selected_line = value & 0x0007;
+    rx_intr_enable = !!(value & rxie_mask);
+    tx_intr_enable = !!(value & txie_mask);
+    if (value & mr_mask) {
+        reset_state();
+        value &= ~mr_mask;
+        set_register_dati_value(reg_csr, value, __func__);
+        return;
+    }
     update_csr();
 }
 
@@ -416,22 +501,20 @@ void dhq11_c::eval_ctrl_dato_value(void)
 {
     line_state_t &line = lines[selected_line];
     uint16_t value = get_register_dato_value(reg_ctrl);
-    line.connected = line.connected || !!(value & DHQ11_CTRL_DTR);
-    if (!(value & DHQ11_CTRL_DTR) && line.client_fd >= 0) {
+    if (value & DHQ11_CTRL_TXA) {
+        line.tx_dma_pending = false;
+        line.tx_dma_active = false;
+        line.tx_dma_error = false;
+        line.tbct = 0;
+        line.tx_queue.clear();
+    }
+    line.connected = !!(value & DHQ11_CTRL_DTR);
+    if (!line.connected && line.client_fd >= 0) {
         close_fd(line.client_fd);
         line.connected = false;
     }
-    if (value & DHQ11_CTRL_RTS)
-        tx_intr_enable = true;
     update_ctrl();
     update_stat();
-}
-
-void dhq11_c::eval_xbuf_dato_value(void)
-{
-    tx_interrupt_pending = false;
-    queue_tx_byte(selected_line, get_register_dato_value(reg_xbuf) & 0x00ff);
-    update_csr();
 }
 
 void dhq11_c::on_after_register_access(qunibusdevice_register_t *device_reg,
@@ -453,7 +536,11 @@ void dhq11_c::on_after_register_access(qunibusdevice_register_t *device_reg,
             update_csr();
         break;
     case dhq11_idx_rbuf:
-        if (unibus_control == QUNIBUS_CYCLE_DATI) {
+        if (unibus_control == QUNIBUS_CYCLE_DATO) {
+            tx_interrupt_pending = false;
+            queue_tx_byte(selected_line, get_register_dato_value(reg_rbuf) & 0x00ff);
+            update_csr();
+        } else if (unibus_control == QUNIBUS_CYCLE_DATI) {
             if (!rx_queue.empty()) {
                 uint8_t line = rx_queue.front().line;
                 rx_queue.pop_front();
@@ -488,9 +575,36 @@ void dhq11_c::on_after_register_access(qunibusdevice_register_t *device_reg,
         else
             update_ctrl();
         break;
-    case dhq11_idx_xbuf:
-        if (unibus_control == QUNIBUS_CYCLE_DATO)
-            eval_xbuf_dato_value();
+    case dhq11_idx_tbadl:
+        if (unibus_control == QUNIBUS_CYCLE_DATO) {
+            line_state_t &line = lines[selected_line];
+            line.tbadl = get_register_dato_value(reg_tbadl);
+            update_tbadl();
+        } else {
+            update_tbadl();
+        }
+        break;
+    case dhq11_idx_tbadh:
+        if (unibus_control == QUNIBUS_CYCLE_DATO) {
+            line_state_t &line = lines[selected_line];
+            line.tbadh = get_register_dato_value(reg_tbadh);
+            update_tbadh();
+        } else {
+            update_tbadh();
+        }
+        break;
+    case dhq11_idx_tbct:
+        if (unibus_control == QUNIBUS_CYCLE_DATO) {
+            line_state_t &line = lines[selected_line];
+            line.tbct = get_register_dato_value(reg_tbct);
+            line.tx_dma_pending = line.tbct != 0;
+            line.tx_dma_active = false;
+            line.tx_dma_error = false;
+            update_tbct();
+            update_csr();
+        } else {
+            update_tbct();
+        }
         break;
     default:
         break;
@@ -672,6 +786,55 @@ void dhq11_c::worker(unsigned instance)
     UNUSED(instance);
     worker_init_realtime_priority(rt_device);
 
-    while (!workers_terminate)
+    while (!workers_terminate) {
         service_lines();
+        service_pending_tx_dma();
+    }
+}
+
+bool dhq11_c::service_pending_tx_dma(void)
+{
+    unsigned line_index = DHQ11_LINE_COUNT;
+    uint32_t start_address = 0;
+    uint16_t word_count = 0;
+
+    pthread_mutex_lock(&on_after_register_access_mutex);
+    for (unsigned i = 0; i < DHQ11_LINE_COUNT; ++i) {
+        line_state_t &line = lines[i];
+        if (line.tx_dma_pending && !line.tx_dma_active) {
+            line.tx_dma_pending = false;
+            line.tx_dma_active = true;
+            line.tx_dma_error = false;
+            line_index = i;
+            start_address = ((uint32_t)line.tbadh << 16) | (uint32_t)line.tbadl;
+            word_count = line.tbct;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&on_after_register_access_mutex);
+
+    if (line_index >= DHQ11_LINE_COUNT || word_count == 0)
+        return false;
+
+    std::vector<uint16_t> buffer(word_count);
+    dma_request.success = false;
+    qunibusadapter->DMA(dma_request, true, QUNIBUS_CYCLE_DATI, start_address, buffer.data(), word_count);
+
+    pthread_mutex_lock(&on_after_register_access_mutex);
+    line_state_t &line = lines[line_index];
+    line.tx_dma_active = false;
+    if (dma_request.success) {
+        for (uint16_t word : buffer)
+            line.tx_queue.push_back((uint8_t)(word & 0x00ff));
+        line.tbct = 0;
+        if (line_index == selected_line)
+            tx_interrupt_pending = false;
+    } else {
+        line.tx_dma_error = true;
+    }
+    if (line_index == selected_line)
+        update_csr();
+    pthread_mutex_unlock(&on_after_register_access_mutex);
+
+    return dma_request.success;
 }
