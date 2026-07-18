@@ -355,14 +355,7 @@ void dhq11_c::update_stat(void)
 
 void dhq11_c::update_ctrl(void)
 {
-    line_state_t &line = lines[selected_line];
     uint16_t value = get_register_dato_value(reg_ctrl);
-    value &= ~(DHQ11_CTRL_RTS | DHQ11_CTRL_DTR | DHQ11_CTRL_LTYP | DHQ11_CTRL_MAINT | DHQ11_CTRL_FXOFF |
-               DHQ11_CTRL_OAUTO | DHQ11_CTRL_BREAK | DHQ11_CTRL_RXE | DHQ11_CTRL_IAF | DHQ11_CTRL_TXA);
-    if (line.connected)
-        value |= DHQ11_CTRL_RTS | DHQ11_CTRL_DTR | DHQ11_CTRL_RXE;
-    if (line.telnet_iac)
-        value |= DHQ11_CTRL_BREAK;
     set_register_dati_value(reg_ctrl, value, __func__);
 }
 
@@ -513,13 +506,9 @@ void dhq11_c::eval_ctrl_dato_value(void)
         line.tbct = 0;
         line.tx_queue.clear();
     }
-    line.connected = !!(value & DHQ11_CTRL_DTR);
-    if (!line.connected && line.client_fd >= 0) {
-        close_fd(line.client_fd);
-        line.connected = false;
-    }
     update_ctrl();
     update_stat();
+    update_csr();
 }
 
 void dhq11_c::on_after_register_access(qunibusdevice_register_t *device_reg,
@@ -818,8 +807,13 @@ bool dhq11_c::service_pending_tx_dma(void)
     }
     pthread_mutex_unlock(&on_after_register_access_mutex);
 
-    if (line_index >= DHQ11_LINE_COUNT || word_count == 0)
+    if (line_index >= DHQ11_LINE_COUNT || word_count == 0) {
+        pthread_mutex_lock(&on_after_register_access_mutex);
+        if (line_index < DHQ11_LINE_COUNT)
+            lines[line_index].tx_dma_active = false;
+        pthread_mutex_unlock(&on_after_register_access_mutex);
         return false;
+    }
 
     std::vector<uint16_t> buffer(word_count);
     dma_request.success = false;
