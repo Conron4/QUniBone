@@ -84,6 +84,8 @@ dhq11_c::dhq11_c() : qunibusdevice_c()
     log_label = "dhq11";
 
     set_default_bus_params(0776600, 18, 0300, 4);
+    dma_request.set_priority_slot(priority_slot.value);
+    intr_request.set_priority_slot(priority_slot.value);
 
     register_count = dhq11_idx_count;
 
@@ -441,6 +443,8 @@ bool dhq11_c::on_before_install(void)
     close_all_lines();
     pthread_mutex_lock(&on_after_register_access_mutex);
     reset_state();
+    dma_request.set_priority_slot(priority_slot.value);
+    intr_request.set_priority_slot(priority_slot.value);
     bool ok = open_listeners();
     pthread_mutex_unlock(&on_after_register_access_mutex);
     return ok;
@@ -462,6 +466,7 @@ bool dhq11_c::on_param_changed(parameter_c *param)
         }
     }
     if (param == &priority_slot) {
+        dma_request.set_priority_slot(priority_slot.new_value);
         intr_request.set_priority_slot(priority_slot.new_value);
     } else if (param == &intr_vector) {
         intr_request.set_vector(intr_vector.new_value);

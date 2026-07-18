@@ -47,19 +47,19 @@ private:
         bool connected;
         bool telnet_iac;
         bool telnet_skip_option;
-                uint16_t tbadl;
-                uint16_t tbadh;
-                uint16_t tbct;
-                bool tx_dma_pending;
-                bool tx_dma_active;
-                bool tx_dma_error;
+        uint16_t tbadl;
+        uint16_t tbadh;
+        uint16_t tbct;
+        bool tx_dma_pending;
+        bool tx_dma_active;
+        bool tx_dma_error;
         std::deque<uint8_t> rx_queue;
         std::deque<uint8_t> tx_queue;
 
         line_state_t()
             : line_index(0), listen_fd(-1), client_fd(-1), tcp_port(0), connected(false),
-                            telnet_iac(false), telnet_skip_option(false), tbadl(0), tbadh(0), tbct(0),
-                            tx_dma_pending(false), tx_dma_active(false), tx_dma_error(false) {}
+              telnet_iac(false), telnet_skip_option(false), tbadl(0), tbadh(0), tbct(0),
+              tx_dma_pending(false), tx_dma_active(false), tx_dma_error(false) {}
     };
 
     struct rx_entry_t {
