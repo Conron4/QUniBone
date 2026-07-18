@@ -162,6 +162,7 @@ void dhq11_c::queue_rx_byte(unsigned line_index, uint8_t value)
     entry.value = value;
     rx_queue.push_back(entry);
     line.rx_queue.push_back(value);
+    rx_interrupt_pending = false;
     if (!rx_done) {
         rx_line = entry.line;
         rx_buffer = entry.value;
@@ -206,6 +207,10 @@ void dhq11_c::update_csr(void)
     bool interrupt_condition = get_intr_condition();
     switch (intr_request.edge_detect(interrupt_condition)) {
     case intr_request_c::INTERRUPT_EDGE_RAISING:
+        if (rx_done && rx_intr_enable)
+            rx_interrupt_pending = true;
+        if (tx_ready && tx_intr_enable)
+            tx_interrupt_pending = true;
         qunibusadapter->INTR(intr_request, reg_csr, value);
         break;
     case intr_request_c::INTERRUPT_EDGE_FALLING:
@@ -237,7 +242,9 @@ void dhq11_c::update_xbuf(void)
 
 bool dhq11_c::get_intr_condition(void)
 {
-    return (rx_done && rx_intr_enable) || (tx_ready && tx_intr_enable);
+    bool rx_condition = rx_done && rx_intr_enable && !rx_interrupt_pending;
+    bool tx_condition = tx_ready && tx_intr_enable && !tx_interrupt_pending;
+    return rx_condition || tx_condition;
 }
 
 void dhq11_c::reset_state(void)
@@ -248,8 +255,10 @@ void dhq11_c::reset_state(void)
     rx_buffer = 0;
     rx_done = false;
     rx_intr_enable = false;
+    rx_interrupt_pending = false;
     tx_ready = true;
     tx_intr_enable = false;
+    tx_interrupt_pending = false;
     intr_request.edge_detect_reset();
 
     if (handle != 0) {
@@ -307,6 +316,7 @@ void dhq11_c::eval_csr_dato_value(void)
 
 void dhq11_c::eval_xbuf_dato_value(void)
 {
+    tx_interrupt_pending = false;
     queue_tx_byte(selected_line, get_register_dato_value(reg_xbuf) & 0x00ff);
     update_csr();
 }
@@ -341,8 +351,10 @@ void dhq11_c::on_after_register_access(qunibusdevice_register_t *device_reg,
                 rx_line = rx_queue.front().line;
                 rx_buffer = rx_queue.front().value;
                 rx_done = true;
+                rx_interrupt_pending = false;
             } else {
                 rx_done = false;
+                rx_interrupt_pending = false;
             }
             update_csr();
             update_rbuf();
@@ -450,6 +462,8 @@ void dhq11_c::service_client_tx(line_state_t &line, unsigned line_index)
     ssize_t count = send(line.client_fd, &value, 1, 0);
     if (count == 1) {
         line.tx_queue.pop_front();
+        if (line.tx_queue.empty())
+            tx_interrupt_pending = false;
         update_csr();
     } else if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
         INFO("DHQ11 line %u send() failed: %s", line_index, strerror(errno));

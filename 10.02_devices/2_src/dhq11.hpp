@@ -63,8 +63,10 @@ private:
     uint8_t rx_buffer;
     bool rx_done;
     bool rx_intr_enable;
+    bool rx_interrupt_pending;
     bool tx_ready;
     bool tx_intr_enable;
+    bool tx_interrupt_pending;
 
     bool setup_line(unsigned line_index, unsigned port_base);
     void close_line(line_state_t &line);
