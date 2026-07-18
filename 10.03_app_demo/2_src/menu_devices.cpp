@@ -219,7 +219,7 @@ void application_c::menu_devices(const char *menu_code, bool with_emulated_CPU)
     DL11b->break_enable.value = true ; // TU58 needs BREAK
 
     DHQ11->name.value = "DHQ11";
-    DHQ11->base_addr.value = 0776500;
+    DHQ11->base_addr.value = 0776600;
     DHQ11->priority_slot.value = 18;
     DHQ11->intr_vector.value = 0300;
     DHQ11->intr_level.value = 4;
