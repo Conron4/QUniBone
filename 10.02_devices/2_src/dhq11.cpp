@@ -101,7 +101,8 @@ dhq11_c::dhq11_c() : qunibusdevice_c()
     reg_rbuf->active_on_dati = true;
     reg_rbuf->active_on_dato = true;
     reg_rbuf->reset_value = 0;
-    reg_rbuf->writable_bits = 0x0000;
+    // RBUF is read on DATI and used as TX data source on DATO.
+    reg_rbuf->writable_bits = 0x00ff;
 
     reg_lpr = &(registers[dhq11_idx_lpr]);
     strcpy(reg_lpr->name, "LPR");
@@ -195,7 +196,8 @@ bool dhq11_c::setup_line(unsigned line_index, unsigned port_base)
 
 bool dhq11_c::is_dhu11_mode(void) const
 {
-    return compatibility.value == "DHU11";
+    // DLV11 compatibility is the only supported mode for this device.
+    return false;
 }
 
 void dhq11_c::close_line(line_state_t &line)
@@ -254,6 +256,7 @@ void dhq11_c::queue_tx_byte(unsigned line_index, uint8_t value)
 {
     line_state_t &line = lines[line_index];
     line.tx_queue.push_back(value);
+    line.tx_dma_error = false;
     tx_interrupt_pending = false;
 }
 
@@ -279,17 +282,17 @@ void dhq11_c::print_line_status(void)
 void dhq11_c::update_csr(void)
 {
     uint16_t value = get_register_dato_value(reg_csr);
-    const uint16_t line_mask = is_dhu11_mode() ? DHQ11_CSR_DHU11_LINE_MASK : DHQ11_CSR_DHV11_LINE_MASK;
-    const uint16_t rda_mask = is_dhu11_mode() ? DHQ11_CSR_DHU11_RDA : DHQ11_CSR_DHV11_RDA;
+    const uint16_t line_mask = DHQ11_CSR_DHV11_LINE_MASK;
+    const uint16_t rda_mask = DHQ11_CSR_DHV11_RDA;
     const uint16_t txa_mask = DHQ11_CSR_DHV11_TXA;
-    const uint16_t tx_line_mask = is_dhu11_mode() ? DHQ11_CSR_DHU11_TX_LINE : DHQ11_CSR_DHV11_TX_LINE;
+    const uint16_t tx_line_mask = DHQ11_CSR_DHV11_TX_LINE;
     line_state_t &line = lines[selected_line];
 
     tx_ready = !line.tx_dma_pending && !line.tx_dma_active && line.tx_queue.empty();
     value &= ~(rda_mask | txa_mask | tx_line_mask | DHQ11_CSR_DHV11_DF | DHQ11_CSR_DHV11_TDE);
     if (rx_done)
         value |= rda_mask;
-    if (!tx_ready) {
+    if (tx_ready) {
         value |= txa_mask;
         value |= tx_line_mask;
     }
@@ -453,7 +456,10 @@ void dhq11_c::on_after_uninstall(void)
 bool dhq11_c::on_param_changed(parameter_c *param)
 {
     if (param == &compatibility) {
-        if (compatibility.new_value != "DHV11" && compatibility.new_value != "DHU11") {
+        // Keep DHU11 disabled for now. Accept DLV11 as an alias for DHV11.
+        if (compatibility.new_value == "DLV11")
+            compatibility.new_value = "DHV11";
+        if (compatibility.new_value != "DHV11") {
             WARNING("DHQ11 compatibility '%s' not supported, using DHV11", compatibility.new_value.c_str());
             compatibility.new_value = "DHV11";
         }
@@ -474,9 +480,9 @@ bool dhq11_c::on_param_changed(parameter_c *param)
 void dhq11_c::eval_csr_dato_value(void)
 {
     uint16_t value = get_register_dato_value(reg_csr);
-    const uint16_t rxie_mask = is_dhu11_mode() ? DHQ11_CSR_DHU11_RXIE : DHQ11_CSR_DHV11_RXIE;
-    const uint16_t txie_mask = is_dhu11_mode() ? DHQ11_CSR_DHU11_TXIE : DHQ11_CSR_DHV11_TXIE;
-    const uint16_t mr_mask = is_dhu11_mode() ? DHQ11_CSR_DHU11_MR : DHQ11_CSR_DHV11_MR;
+    const uint16_t rxie_mask = DHQ11_CSR_DHV11_RXIE;
+    const uint16_t txie_mask = DHQ11_CSR_DHV11_TXIE;
+    const uint16_t mr_mask = DHQ11_CSR_DHV11_MR;
 
     selected_line = value & 0x0007;
     rx_intr_enable = !!(value & rxie_mask);
@@ -698,10 +704,16 @@ void dhq11_c::service_client_tx(line_state_t &line, unsigned line_index)
     if (line.client_fd < 0 || line.tx_queue.empty())
         return;
 
-    uint8_t value = line.tx_queue.front();
-    ssize_t count = send(line.client_fd, &value, 1, 0);
-    if (count == 1) {
-        line.tx_queue.pop_front();
+    uint8_t buffer[256];
+    size_t queued = line.tx_queue.size();
+    size_t send_len = queued < sizeof(buffer) ? queued : sizeof(buffer);
+    for (size_t i = 0; i < send_len; ++i)
+        buffer[i] = line.tx_queue[i];
+
+    ssize_t count = send(line.client_fd, buffer, send_len, 0);
+    if (count > 0) {
+        for (ssize_t i = 0; i < count; ++i)
+            line.tx_queue.pop_front();
         if (line.tx_queue.empty())
             tx_interrupt_pending = false;
         update_csr();
@@ -790,7 +802,7 @@ bool dhq11_c::service_pending_tx_dma(void)
 {
     unsigned line_index = DHQ11_LINE_COUNT;
     uint32_t start_address = 0;
-    uint16_t word_count = 0;
+    uint16_t byte_count = 0;
 
     pthread_mutex_lock(&on_after_register_access_mutex);
     for (unsigned i = 0; i < DHQ11_LINE_COUNT; ++i) {
@@ -801,13 +813,13 @@ bool dhq11_c::service_pending_tx_dma(void)
             line.tx_dma_error = false;
             line_index = i;
             start_address = ((uint32_t)line.tbadh << 16) | (uint32_t)line.tbadl;
-            word_count = line.tbct;
+            byte_count = line.tbct;
             break;
         }
     }
     pthread_mutex_unlock(&on_after_register_access_mutex);
 
-    if (line_index >= DHQ11_LINE_COUNT || word_count == 0) {
+    if (line_index >= DHQ11_LINE_COUNT || byte_count == 0) {
         pthread_mutex_lock(&on_after_register_access_mutex);
         if (line_index < DHQ11_LINE_COUNT)
             lines[line_index].tx_dma_active = false;
@@ -815,24 +827,41 @@ bool dhq11_c::service_pending_tx_dma(void)
         return false;
     }
 
-    std::vector<uint16_t> buffer(word_count);
+    const uint32_t dma_address = start_address & ~1u;
+    const uint32_t start_byte_offset = start_address & 1u;
+    const uint32_t total_bytes = start_byte_offset + (uint32_t)byte_count;
+    const uint16_t dma_word_count = (uint16_t)((total_bytes + 1u) / 2u);
+
+    std::vector<uint16_t> buffer(dma_word_count);
     dma_request.success = false;
-    qunibusadapter->DMA(dma_request, true, QUNIBUS_CYCLE_DATI, start_address, buffer.data(), word_count);
+    qunibusadapter->DMA(dma_request, true, QUNIBUS_CYCLE_DATI, dma_address, buffer.data(), dma_word_count);
 
     pthread_mutex_lock(&on_after_register_access_mutex);
     line_state_t &line = lines[line_index];
     line.tx_dma_active = false;
     if (dma_request.success) {
-        for (uint16_t word : buffer)
-            line.tx_queue.push_back((uint8_t)(word & 0x00ff));
+        for (uint32_t i = 0; i < (uint32_t)byte_count; ++i) {
+            uint32_t dma_byte_index = start_byte_offset + i;
+            uint16_t word = buffer[dma_byte_index >> 1];
+            uint8_t value = (dma_byte_index & 1u) ? (uint8_t)((word >> 8) & 0x00ff)
+                                                 : (uint8_t)(word & 0x00ff);
+            line.tx_queue.push_back(value);
+        }
         line.tbct = 0;
+        uint32_t next_address = start_address + (uint32_t)byte_count;
+        line.tbadl = (uint16_t)(next_address & 0x0000ffffu);
+        line.tbadh = (uint16_t)((next_address >> 16) & 0x0000ffffu);
         if (line_index == selected_line)
             tx_interrupt_pending = false;
     } else {
         line.tx_dma_error = true;
     }
-    if (line_index == selected_line)
+    if (line_index == selected_line) {
+        update_tbadl();
+        update_tbadh();
+        update_tbct();
         update_csr();
+    }
     pthread_mutex_unlock(&on_after_register_access_mutex);
 
     return dma_request.success;

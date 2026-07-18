@@ -143,7 +143,7 @@ public:
         "compatibility",
         "cmp",
         false,
-        "DHV11/DHU11 personality; default DHV11");
+        "DHV11 personality (DLV11 accepted as alias); DHU11 reserved for future use");
 
     void reset(void);
 
