@@ -21,9 +21,17 @@
 class dhq11_c : public qunibusdevice_c {
 private:
 
+    enum dhq11_personality_e {
+        personality_dhv11 = 0,
+        personality_dhu11 = 1,
+    };
+
     enum dhq11_reg_index {
         dhq11_idx_csr = 0,
         dhq11_idx_rbuf,
+        dhq11_idx_lpr,
+        dhq11_idx_stat,
+        dhq11_idx_ctrl,
         dhq11_idx_xbuf,
         dhq11_idx_count
     };
@@ -51,9 +59,14 @@ private:
 
     qunibusdevice_register_t *reg_csr;
     qunibusdevice_register_t *reg_rbuf;
+    qunibusdevice_register_t *reg_lpr;
+    qunibusdevice_register_t *reg_stat;
+    qunibusdevice_register_t *reg_ctrl;
     qunibusdevice_register_t *reg_xbuf;
 
     intr_request_c intr_request = intr_request_c(this);
+
+    dhq11_personality_e personality;
 
     line_state_t lines[8];
     std::deque<rx_entry_t> rx_queue;
@@ -68,6 +81,7 @@ private:
     bool tx_intr_enable;
     bool tx_interrupt_pending;
 
+    bool is_dhu11_mode(void) const;
     bool setup_line(unsigned line_index, unsigned port_base);
     void close_line(line_state_t &line);
     void close_all_lines(void);
@@ -80,10 +94,15 @@ private:
     void queue_tx_byte(unsigned line_index, uint8_t value);
     void update_csr(void);
     void update_rbuf(void);
+    void update_lpr(void);
+    void update_stat(void);
+    void update_ctrl(void);
     void update_xbuf(void);
     bool get_intr_condition(void);
     void reset_state(void);
     void eval_csr_dato_value(void);
+    void eval_lpr_dato_value(void);
+    void eval_ctrl_dato_value(void);
     void eval_xbuf_dato_value(void);
 
 public:
@@ -103,6 +122,13 @@ public:
         "TCP port base for line 0; the remaining lines use consecutive ports",
         16,
         10);
+
+    parameter_string_c compatibility = parameter_string_c(
+        this,
+        "compatibility",
+        "cmp",
+        false,
+        "DHV11/DHU11 personality; default DHV11");
 
     void reset(void);
 

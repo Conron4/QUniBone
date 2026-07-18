@@ -24,6 +24,18 @@
 #define DHQ11_CSR_RXRDY 0000400
 #define DHQ11_CSR_TXRDY 0001000
 
+#define DHQ11_STAT_DSR 0001000
+#define DHQ11_STAT_RI  0002000
+#define DHQ11_STAT_DCD  0004000
+#define DHQ11_STAT_CTS  0010000
+
+#define DHQ11_CTRL_DTR  0001000
+#define DHQ11_CTRL_RTS  0040000
+#define DHQ11_CTRL_RXE  0000040
+#define DHQ11_CTRL_BREAK 0000020
+
+#define DHQ11_LPR_BAUD_MASK 0170000
+
 static void set_nonblocking(int fd)
 {
     int flags = fcntl(fd, F_GETFL, 0);
@@ -65,13 +77,35 @@ dhq11_c::dhq11_c() : qunibusdevice_c()
     reg_rbuf->reset_value = 0;
     reg_rbuf->writable_bits = 0x0000;
 
+    reg_lpr = &(registers[dhq11_idx_lpr]);
+    strcpy(reg_lpr->name, "LPR");
+    reg_lpr->active_on_dati = false;
+    reg_lpr->active_on_dato = true;
+    reg_lpr->reset_value = 0;
+    reg_lpr->writable_bits = 0xffff;
+
+    reg_stat = &(registers[dhq11_idx_stat]);
+    strcpy(reg_stat->name, "STAT");
+    reg_stat->active_on_dati = true;
+    reg_stat->active_on_dato = true;
+    reg_stat->reset_value = 0;
+    reg_stat->writable_bits = 0x0000;
+
+    reg_ctrl = &(registers[dhq11_idx_ctrl]);
+    strcpy(reg_ctrl->name, "CTRL");
+    reg_ctrl->active_on_dati = false;
+    reg_ctrl->active_on_dato = true;
+    reg_ctrl->reset_value = 0;
+    reg_ctrl->writable_bits = 0xffff;
+
     reg_xbuf = &(registers[dhq11_idx_xbuf]);
-    strcpy(reg_xbuf->name, "XBUF");
+    strcpy(reg_xbuf->name, "TXC");
     reg_xbuf->active_on_dati = false;
     reg_xbuf->active_on_dato = true;
     reg_xbuf->reset_value = 0;
     reg_xbuf->writable_bits = 0x00ff;
 
+    compatibility.value = "DHV11";
     telnet_port_base.value = 20000;
 
     reset_state();
@@ -117,6 +151,11 @@ bool dhq11_c::setup_line(unsigned line_index, unsigned port_base)
 
     INFO("DHQ11 line %u listening on TCP port %u", line_index, line.tcp_port);
     return true;
+}
+
+bool dhq11_c::is_dhu11_mode(void) const
+{
+    return compatibility.value == "DHU11";
 }
 
 void dhq11_c::close_line(line_state_t &line)
@@ -175,19 +214,25 @@ void dhq11_c::queue_tx_byte(unsigned line_index, uint8_t value)
 {
     line_state_t &line = lines[line_index];
     line.tx_queue.push_back(value);
+    tx_interrupt_pending = false;
 }
 
 void dhq11_c::print_line_status(void)
 {
     for (unsigned i = 0; i < DHQ11_LINE_COUNT; ++i) {
         line_state_t &line = lines[i];
-        printf("DHQ11 line %u: tcp=%u listen=%s client=%s rx=%u tx=%u\n",
+        printf("DHQ11 line %u: tcp=%u listen=%s client=%s rx=%u tx=%u dcd=%u dsr=%u cts=%u dtr=%u rts=%u\n",
                i,
                line.tcp_port,
                line.listen_fd >= 0 ? "up" : "down",
                line.client_fd >= 0 ? "up" : "down",
                (unsigned)line.rx_queue.size(),
-               (unsigned)line.tx_queue.size());
+               (unsigned)line.tx_queue.size(),
+               line.connected ? 1 : 0,
+               line.connected ? 1 : 0,
+               line.connected ? 1 : 0,
+               line.connected ? 1 : 0,
+               line.connected ? 1 : 0);
     }
 }
 
@@ -234,6 +279,43 @@ void dhq11_c::update_rbuf(void)
     set_register_dati_value(reg_rbuf, value, __func__);
 }
 
+void dhq11_c::update_lpr(void)
+{
+    line_state_t &line = lines[selected_line];
+    uint16_t value = get_register_dato_value(reg_lpr);
+    value &= ~DHQ11_LPR_BAUD_MASK;
+    if (line.connected)
+        value |= 0010000;
+    set_register_dati_value(reg_lpr, value, __func__);
+}
+
+void dhq11_c::update_stat(void)
+{
+    line_state_t &line = lines[selected_line];
+    uint16_t value = 0;
+    if (line.connected) {
+        value |= DHQ11_STAT_DSR | DHQ11_STAT_DCD | DHQ11_STAT_CTS;
+        if (line.telnet_iac)
+            value |= DHQ11_STAT_RI;
+    }
+    set_register_dati_value(reg_stat, value, __func__);
+}
+
+void dhq11_c::update_ctrl(void)
+{
+    line_state_t &line = lines[selected_line];
+    uint16_t value = 0;
+    if (line.connected)
+        value |= DHQ11_CTRL_RXE;
+    if (tx_intr_enable)
+        value |= DHQ11_CTRL_RTS;
+    if (!is_dhu11_mode())
+        value |= DHQ11_CTRL_DTR;
+    if (line.telnet_iac)
+        value |= DHQ11_CTRL_BREAK;
+    set_register_dati_value(reg_ctrl, value, __func__);
+}
+
 void dhq11_c::update_xbuf(void)
 {
     uint16_t value = get_register_dato_value(reg_xbuf) & 0x00ff;
@@ -265,6 +347,9 @@ void dhq11_c::reset_state(void)
         reset_unibus_registers();
         update_csr();
         update_rbuf();
+        update_lpr();
+        update_stat();
+        update_ctrl();
         update_xbuf();
     }
 }
@@ -295,12 +380,20 @@ void dhq11_c::on_after_uninstall(void)
 
 bool dhq11_c::on_param_changed(parameter_c *param)
 {
+    if (param == &compatibility) {
+        if (compatibility.new_value != "DHV11" && compatibility.new_value != "DHU11") {
+            WARNING("DHQ11 compatibility '%s' not supported, using DHV11", compatibility.new_value.c_str());
+            compatibility.new_value = "DHV11";
+        }
+    }
     if (param == &priority_slot) {
         intr_request.set_priority_slot(priority_slot.new_value);
     } else if (param == &intr_vector) {
         intr_request.set_vector(intr_vector.new_value);
     } else if (param == &intr_level) {
         intr_request.set_level(intr_level.new_value);
+    } else if (param == &compatibility) {
+        reset_state();
     }
     return qunibusdevice_c::on_param_changed(param);
 }
@@ -312,6 +405,26 @@ void dhq11_c::eval_csr_dato_value(void)
     rx_intr_enable = !!(value & DHQ11_CSR_RXIE);
     tx_intr_enable = !!(value & DHQ11_CSR_TXIE);
     update_csr();
+}
+
+void dhq11_c::eval_lpr_dato_value(void)
+{
+    update_lpr();
+}
+
+void dhq11_c::eval_ctrl_dato_value(void)
+{
+    line_state_t &line = lines[selected_line];
+    uint16_t value = get_register_dato_value(reg_ctrl);
+    line.connected = line.connected || !!(value & DHQ11_CTRL_DTR);
+    if (!(value & DHQ11_CTRL_DTR) && line.client_fd >= 0) {
+        close_fd(line.client_fd);
+        line.connected = false;
+    }
+    if (value & DHQ11_CTRL_RTS)
+        tx_intr_enable = true;
+    update_ctrl();
+    update_stat();
 }
 
 void dhq11_c::eval_xbuf_dato_value(void)
@@ -360,6 +473,21 @@ void dhq11_c::on_after_register_access(qunibusdevice_register_t *device_reg,
             update_rbuf();
         }
         break;
+    case dhq11_idx_lpr:
+        if (unibus_control == QUNIBUS_CYCLE_DATO)
+            eval_lpr_dato_value();
+        else
+            update_lpr();
+        break;
+    case dhq11_idx_stat:
+        update_stat();
+        break;
+    case dhq11_idx_ctrl:
+        if (unibus_control == QUNIBUS_CYCLE_DATO)
+            eval_ctrl_dato_value();
+        else
+            update_ctrl();
+        break;
     case dhq11_idx_xbuf:
         if (unibus_control == QUNIBUS_CYCLE_DATO)
             eval_xbuf_dato_value();
@@ -403,6 +531,8 @@ void dhq11_c::service_listener(line_state_t &line, unsigned line_index)
     line.telnet_skip_option = false;
 
     INFO("DHQ11 line %u connected on TCP port %u", line_index, line.tcp_port);
+    update_stat();
+    update_ctrl();
 }
 
 void dhq11_c::service_client_rx(line_state_t &line, unsigned line_index)
@@ -418,6 +548,8 @@ void dhq11_c::service_client_rx(line_state_t &line, unsigned line_index)
         line.connected = false;
         line.telnet_iac = false;
         line.telnet_skip_option = false;
+        update_stat();
+        update_ctrl();
         if (line.tx_queue.empty()) {
             tx_ready = true;
             update_csr();
@@ -469,6 +601,8 @@ void dhq11_c::service_client_tx(line_state_t &line, unsigned line_index)
         INFO("DHQ11 line %u send() failed: %s", line_index, strerror(errno));
         close_fd(line.client_fd);
         line.connected = false;
+        update_stat();
+        update_ctrl();
         update_csr();
     }
 }
@@ -526,6 +660,9 @@ void dhq11_c::service_lines(void)
 
     if (rx_done || get_intr_condition())
         update_csr();
+
+    update_stat();
+    update_ctrl();
 
     pthread_mutex_unlock(&on_after_register_access_mutex);
 }
