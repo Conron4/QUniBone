@@ -7,7 +7,7 @@ if [ -f ./update-code.sh ] ; then
     exit 1
 fi
 
-GITURL=https://github.com/j-hoppe/QUniBone.git
+GITURL=https://github.com/Conron4/QUniBone.git
 echo "This script updates local files from GitHub"
 echo "		$GITURL"
 echo "It forces all local files also present on GitHub to latest version,"
