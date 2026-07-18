@@ -59,7 +59,7 @@ dhq11_c::dhq11_c() : qunibusdevice_c()
     type_name.value = "dhq11_c";
     log_label = "dhq11";
 
-    set_default_bus_params(0776500, 1, 0300, 4);
+    set_default_bus_params(0776500, 18, 0300, 4);
 
     register_count = dhq11_idx_count;
 
