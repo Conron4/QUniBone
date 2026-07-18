@@ -242,7 +242,6 @@ bool dhq11_c::get_intr_condition(void)
 
 void dhq11_c::reset_state(void)
 {
-    reset_unibus_registers();
     rx_queue.clear();
     selected_line = 0;
     rx_line = 0;
@@ -252,9 +251,13 @@ void dhq11_c::reset_state(void)
     tx_ready = true;
     tx_intr_enable = false;
     intr_request.edge_detect_reset();
-    update_csr();
-    update_rbuf();
-    update_xbuf();
+
+    if (handle != 0) {
+        reset_unibus_registers();
+        update_csr();
+        update_rbuf();
+        update_xbuf();
+    }
 }
 
 void dhq11_c::reset(void)
