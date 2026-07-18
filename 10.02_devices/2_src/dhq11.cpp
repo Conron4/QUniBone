@@ -243,7 +243,6 @@ bool dhq11_c::get_intr_condition(void)
 void dhq11_c::reset_state(void)
 {
     reset_unibus_registers();
-    qunibusadapter->cancel_INTR(intr_request);
     rx_queue.clear();
     selected_line = 0;
     rx_line = 0;
@@ -277,7 +276,8 @@ bool dhq11_c::on_before_install(void)
 
 void dhq11_c::on_after_uninstall(void)
 {
-    reset();
+    if (intr_request.get_priority_slot() < PRIORITY_SLOT_COUNT)
+        qunibusadapter->cancel_INTR(intr_request);
     close_all_lines();
 }
 
