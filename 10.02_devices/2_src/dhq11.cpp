@@ -30,6 +30,10 @@
 #define DHQ11_CSR_DHV11_MR        0x0080
 #define DHQ11_CSR_DHV11_LINE_MASK 0x003f
 
+// Compatibility aliases for software expecting low-byte control bits.
+#define DHQ11_CSR_COMPAT_RIE      0x0040
+#define DHQ11_CSR_COMPAT_MSE      0x0020
+
 #define DHQ11_CSR_DHU11_TXA       0x8000
 #define DHQ11_CSR_DHU11_TXIE      0x4000
 #define DHQ11_CSR_DHU11_DF        0x2000
@@ -59,6 +63,8 @@
 #define DHQ11_CTRL_TXA            0x0010
 
 #define DHQ11_LPR_BAUD_MASK       0xf000
+
+#define DHQ11_RBUF_VALID          0x8000
 
 static void set_nonblocking(int fd)
 {
@@ -327,7 +333,9 @@ void dhq11_c::update_rbuf(void)
         rx_buffer = rx_queue.front().value;
         rx_done = true;
     }
-    uint16_t value = rx_buffer | ((uint16_t)rx_line << 8);
+    uint16_t value = ((uint16_t)(rx_line & 0x000f) << 8) | (uint16_t)rx_buffer;
+    if (rx_done)
+        value |= DHQ11_RBUF_VALID;
     set_register_dati_value(reg_rbuf, value, __func__);
 }
 
@@ -382,8 +390,8 @@ void dhq11_c::update_tbct(void)
 
 bool dhq11_c::get_intr_condition(void)
 {
-    bool rx_condition = rx_done && rx_intr_enable && !rx_interrupt_pending;
-    bool tx_condition = tx_ready && tx_intr_enable && !tx_interrupt_pending;
+    bool rx_condition = master_scan_enable && rx_done && rx_intr_enable && !rx_interrupt_pending;
+    bool tx_condition = master_scan_enable && tx_ready && tx_intr_enable && !tx_interrupt_pending;
     return rx_condition || tx_condition;
 }
 
@@ -394,6 +402,7 @@ void dhq11_c::reset_state(void)
     rx_line = 0;
     rx_buffer = 0;
     rx_done = false;
+    master_scan_enable = false;
     rx_intr_enable = false;
     rx_interrupt_pending = false;
     tx_ready = true;
@@ -483,10 +492,13 @@ void dhq11_c::eval_csr_dato_value(void)
     const uint16_t rxie_mask = DHQ11_CSR_DHV11_RXIE;
     const uint16_t txie_mask = DHQ11_CSR_DHV11_TXIE;
     const uint16_t mr_mask = DHQ11_CSR_DHV11_MR;
+    const uint16_t rie_compat_mask = DHQ11_CSR_COMPAT_RIE;
+    const uint16_t mse_compat_mask = DHQ11_CSR_COMPAT_MSE;
 
     selected_line = value & 0x0007;
-    rx_intr_enable = !!(value & rxie_mask);
+    rx_intr_enable = !!(value & (rxie_mask | rie_compat_mask));
     tx_intr_enable = !!(value & txie_mask);
+    master_scan_enable = !!(value & (mse_compat_mask | rxie_mask));
     if (value & mr_mask) {
         reset_state();
         value &= ~mr_mask;

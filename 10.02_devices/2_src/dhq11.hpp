@@ -88,6 +88,7 @@ private:
     uint8_t rx_line;
     uint8_t rx_buffer;
     bool rx_done;
+    bool master_scan_enable;
     bool rx_intr_enable;
     bool rx_interrupt_pending;
     bool tx_ready;
