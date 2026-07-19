@@ -245,6 +245,10 @@ void dhq11_c::queue_rx_byte(unsigned line_index, uint8_t value)
     entry.value = value;
     rx_queue.push_back(entry);
     line.rx_queue.push_back(value);
+    if (debug_trace.value) {
+        INFO("DHQ11 RX enqueue line %u byte=0x%02x rx_depth=%u global_rx=%u",
+             line_index, value, (unsigned)line.rx_queue.size(), (unsigned)rx_queue.size());
+    }
     rx_interrupt_pending = false;
     if (!rx_done) {
         rx_line = entry.line;
@@ -259,6 +263,9 @@ void dhq11_c::queue_tx_byte(unsigned line_index, uint8_t value)
     line_state_t &line = lines[line_index];
     line.tx_queue.push_back(value);
     line.tx_dma_error = false;
+    if (debug_trace.value) {
+        INFO("DHQ11 TX enqueue line %u byte=0x%02x tx_depth=%u", line_index, value, (unsigned)line.tx_queue.size());
+    }
     tx_interrupt_pending = false;
 }
 
@@ -304,6 +311,12 @@ void dhq11_c::update_csr(void)
     value |= (uint16_t)(selected_line & 0x0007);
 
     bool interrupt_condition = get_intr_condition();
+    if (debug_trace.value) {
+        INFO("DHQ11 CSR update sel=%u rx_done=%u rx_ie=%u tx_ready=%u tx_ie=%u intr=%u csr=0x%04x txq=%u rxq=%u",
+             (unsigned)selected_line, rx_done ? 1 : 0, rx_intr_enable ? 1 : 0,
+             tx_ready ? 1 : 0, tx_intr_enable ? 1 : 0, interrupt_condition ? 1 : 0,
+             value, (unsigned)line.tx_queue.size(), (unsigned)rx_queue.size());
+    }
     switch (intr_request.edge_detect(interrupt_condition)) {
     case intr_request_c::INTERRUPT_EDGE_RAISING:
         if (rx_done && rx_intr_enable)
@@ -332,6 +345,10 @@ void dhq11_c::update_rbuf(void)
     uint16_t value = ((uint16_t)(rx_line & 0x000f) << 8) | (uint16_t)rx_buffer;
     if (rx_done)
         value |= DHQ11_RBUF_VALID;
+    if (debug_trace.value) {
+        INFO("DHQ11 RBUF update line=%u value=0x%04x rx_done=%u global_rx=%u",
+             (unsigned)rx_line, value, rx_done ? 1 : 0, (unsigned)rx_queue.size());
+    }
     set_register_dati_value(reg_rbuf, value, __func__);
 }
 
@@ -363,6 +380,11 @@ void dhq11_c::update_stat(void)
 void dhq11_c::update_ctrl(void)
 {
     uint16_t value = get_register_dato_value(reg_ctrl);
+    if (debug_trace.value) {
+        INFO("DHQ11 CTRL update sel=%u value=0x%04x connected=%u txa=%u",
+             (unsigned)selected_line, value, lines[selected_line].connected ? 1 : 0,
+             (value & DHQ11_CTRL_TXA) ? 1 : 0);
+    }
     set_register_dati_value(reg_ctrl, value, __func__);
 }
 
@@ -491,6 +513,11 @@ void dhq11_c::eval_csr_dato_value(void)
     selected_line = value & 0x0007;
     rx_intr_enable = !!(value & rxie_mask);
     tx_intr_enable = !!(value & txie_mask);
+    if (debug_trace.value) {
+        INFO("DHQ11 CSR write value=0x%04x sel=%u rx_ie=%u tx_ie=%u mr=%u",
+             value, (unsigned)selected_line, rx_intr_enable ? 1 : 0, tx_intr_enable ? 1 : 0,
+             (value & mr_mask) ? 1 : 0);
+    }
     if (value & mr_mask) {
         reset_state();
         value &= ~mr_mask;
@@ -509,6 +536,11 @@ void dhq11_c::eval_ctrl_dato_value(void)
 {
     line_state_t &line = lines[selected_line];
     uint16_t value = get_register_dato_value(reg_ctrl);
+    if (debug_trace.value) {
+        INFO("DHQ11 CTRL write sel=%u value=0x%04x tx_pending=%u tx_active=%u tx_error=%u txq=%u",
+             (unsigned)selected_line, value, line.tx_dma_pending ? 1 : 0, line.tx_dma_active ? 1 : 0,
+             line.tx_dma_error ? 1 : 0, (unsigned)line.tx_queue.size());
+    }
     if (value & DHQ11_CTRL_TXA) {
         line.tx_dma_pending = false;
         line.tx_dma_active = false;
@@ -541,10 +573,18 @@ void dhq11_c::on_after_register_access(qunibusdevice_register_t *device_reg,
         break;
     case dhq11_idx_rbuf:
         if (unibus_control == QUNIBUS_CYCLE_DATO) {
+            if (debug_trace.value) {
+                INFO("DHQ11 TXC write sel=%u value=0x%04x", (unsigned)selected_line,
+                     get_register_dato_value(reg_rbuf));
+            }
             tx_interrupt_pending = false;
             queue_tx_byte(selected_line, get_register_dato_value(reg_rbuf) & 0x00ff);
             update_csr();
         } else if (unibus_control == QUNIBUS_CYCLE_DATI) {
+            if (debug_trace.value) {
+                INFO("DHQ11 RBUF read sel=%u local_rx=%u global_rx=%u", (unsigned)selected_line,
+                     (unsigned)lines[selected_line].rx_queue.size(), (unsigned)rx_queue.size());
+            }
             if (!rx_queue.empty()) {
                 uint8_t line = rx_queue.front().line;
                 rx_queue.pop_front();
@@ -583,6 +623,8 @@ void dhq11_c::on_after_register_access(qunibusdevice_register_t *device_reg,
         if (unibus_control == QUNIBUS_CYCLE_DATO) {
             line_state_t &line = lines[selected_line];
             line.tbadl = get_register_dato_value(reg_tbadl);
+            if (debug_trace.value)
+                INFO("DHQ11 TBADL write sel=%u value=0x%04x", (unsigned)selected_line, line.tbadl);
             update_tbadl();
         } else {
             update_tbadl();
@@ -592,6 +634,8 @@ void dhq11_c::on_after_register_access(qunibusdevice_register_t *device_reg,
         if (unibus_control == QUNIBUS_CYCLE_DATO) {
             line_state_t &line = lines[selected_line];
             line.tbadh = get_register_dato_value(reg_tbadh);
+            if (debug_trace.value)
+                INFO("DHQ11 TBADH write sel=%u value=0x%04x", (unsigned)selected_line, line.tbadh);
             update_tbadh();
         } else {
             update_tbadh();
@@ -604,6 +648,10 @@ void dhq11_c::on_after_register_access(qunibusdevice_register_t *device_reg,
             line.tx_dma_pending = line.tbct != 0;
             line.tx_dma_active = false;
             line.tx_dma_error = false;
+            if (debug_trace.value) {
+                INFO("DHQ11 TBCT write sel=%u value=0x%04x pending=%u", (unsigned)selected_line,
+                     line.tbct, line.tx_dma_pending ? 1 : 0);
+            }
             update_tbct();
             update_csr();
         } else {
@@ -649,6 +697,8 @@ void dhq11_c::service_listener(line_state_t &line, unsigned line_index)
     line.telnet_skip_option = false;
 
     INFO("DHQ11 line %u connected on TCP port %u", line_index, line.tcp_port);
+    if (debug_trace.value)
+        INFO("DHQ11 line %u accept fd=%d", line_index, line.client_fd);
     update_stat();
     update_ctrl();
 }
@@ -675,10 +725,16 @@ void dhq11_c::service_client_rx(line_state_t &line, unsigned line_index)
         return;
     }
     if (count < 0) {
-        if (errno != EAGAIN && errno != EWOULDBLOCK)
+        if (errno != EAGAIN && errno != EWOULDBLOCK) {
             INFO("DHQ11 line %u recv() failed: %s", line_index, strerror(errno));
+        } else if (debug_trace.value) {
+            INFO("DHQ11 line %u recv() would block", line_index);
+        }
         return;
     }
+
+    if (debug_trace.value)
+        INFO("DHQ11 line %u recv() %zd bytes", line_index, count);
 
     for (ssize_t i = 0; i < count; ++i) {
         uint8_t ch = buffer[i];
@@ -716,6 +772,10 @@ void dhq11_c::service_client_tx(line_state_t &line, unsigned line_index)
 
     ssize_t count = send(line.client_fd, buffer, send_len, 0);
     if (count > 0) {
+        if (debug_trace.value) {
+            INFO("DHQ11 line %u send() sent=%zd queued_before=%u",
+                 line_index, count, (unsigned)queued);
+        }
         for (ssize_t i = 0; i < count; ++i)
             line.tx_queue.pop_front();
         if (line.tx_queue.empty())
@@ -723,11 +783,8 @@ void dhq11_c::service_client_tx(line_state_t &line, unsigned line_index)
         update_csr();
     } else if (count < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
         INFO("DHQ11 line %u send() failed: %s", line_index, strerror(errno));
-        close_fd(line.client_fd);
-        line.connected = false;
-        update_stat();
-        update_ctrl();
-        update_csr();
+    } else if (debug_trace.value) {
+        INFO("DHQ11 line %u send() would block queued=%u", line_index, (unsigned)line.tx_queue.size());
     }
 }
 
@@ -844,6 +901,10 @@ bool dhq11_c::service_pending_tx_dma(void)
     line_state_t &line = lines[line_index];
     line.tx_dma_active = false;
     if (dma_request.success) {
+        if (debug_trace.value) {
+            INFO("DHQ11 TX DMA complete line %u start=0x%08x count=%u offset=%u",
+                 line_index, start_address, (unsigned)byte_count, (unsigned)start_byte_offset);
+        }
         for (uint32_t i = 0; i < (uint32_t)byte_count; ++i) {
             uint32_t dma_byte_index = start_byte_offset + i;
             uint16_t word = buffer[dma_byte_index >> 1];
@@ -859,6 +920,8 @@ bool dhq11_c::service_pending_tx_dma(void)
             tx_interrupt_pending = false;
     } else {
         line.tx_dma_error = true;
+        if (debug_trace.value)
+            INFO("DHQ11 TX DMA error line %u start=0x%08x count=%u", line_index, start_address, (unsigned)byte_count);
     }
     if (line_index == selected_line) {
         update_tbadl();

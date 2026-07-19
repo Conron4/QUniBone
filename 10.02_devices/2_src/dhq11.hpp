@@ -145,6 +145,13 @@ public:
         false,
         "DHV11 personality (DLV11 accepted as alias); DHU11 reserved for future use");
 
+    parameter_bool_c debug_trace = parameter_bool_c(
+        this,
+        "debug_trace",
+        "dbg",
+        false,
+        "Enable DHQ11 trace logging for RX/TX register flow and socket activity");
+
     void reset(void);
 
     bool on_before_install(void) override;
